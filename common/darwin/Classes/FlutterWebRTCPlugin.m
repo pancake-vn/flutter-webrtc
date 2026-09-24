@@ -218,6 +218,7 @@ static FlutterWebRTCPlugin *sharedSingleton;
     peerConnection.eventSink = nil;
   }
   _eventSink = nil;
+  [self stopLoggerCallback];
 }
 
 #pragma mark - FlutterStreamHandler methods
@@ -251,17 +252,32 @@ static FlutterWebRTCPlugin *sharedSingleton;
 }
 
 -(void) initLoggerCallback:(RTCLoggingSeverity)severity {
-  if(loggerCallback == nil) {
-    loggerCallback = [RTC_OBJC_TYPE(RTCCallbackLogger) new];
-    [loggerCallback start:^(NSString *logMessage) {
-      postEvent(self.eventSink, @{
-        @"event" : @"onLogData",
-        @"data" : logMessage
-      });
-    }];
+  // The severity is only read when the logger starts, so a change restarts it.
+  [self stopLoggerCallback];
+  if (severity == RTCLoggingSeverityNone) {
+    return;
   }
 
+  loggerCallback = [RTC_OBJC_TYPE(RTCCallbackLogger) new];
   loggerCallback.severity = severity;
+  // WebRTC logging is process-wide: a strong self here keeps this plugin, and
+  // its engine's event sink, receiving every engine's logs after it is gone.
+  __weak FlutterWebRTCPlugin* weakSelf = self;
+  [loggerCallback start:^(NSString *logMessage) {
+    FlutterEventSink sink = weakSelf.eventSink;
+    if (sink == nil) {
+      return;
+    }
+    postEvent(sink, @{
+      @"event" : @"onLogData",
+      @"data" : logMessage
+    });
+  }];
+}
+
+-(void) stopLoggerCallback {
+  [loggerCallback stop];
+  loggerCallback = nil;
 }
 
 -(RTCLoggingSeverity)str2LogSeverity:(NSString*)str {
