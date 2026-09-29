@@ -46,12 +46,14 @@ void FlutterMediaStream::GetUserMedia(
   auto it = constraints.find(EncodableValue("audio"));
   if (it != constraints.end()) {
     EncodableValue audio = it->second;
-    if (TypeIs<bool>(audio)) {
-      if (true == GetValue<bool>(audio)) {
-        GetUserAudio(constraints, stream, params);
+    bool wants_audio =
+        (TypeIs<bool>(audio) && GetValue<bool>(audio)) ||
+        TypeIs<EncodableMap>(audio);
+    if (wants_audio) {
+      if (!GetUserAudio(constraints, stream, params)) {
+        result->Error("NotFoundError", "Requested device not found");
+        return;
       }
-    } else if (TypeIs<EncodableMap>(audio)) {
-      GetUserAudio(constraints, stream, params);
     } else {
       params[EncodableValue("audioTracks")] = EncodableValue(EncodableList());
     }
@@ -165,7 +167,7 @@ std::string getDeviceIdConstraint(const EncodableMap& mediaConstraints) {
   return "";
 }
 
-void FlutterMediaStream::GetUserAudio(const EncodableMap& constraints,
+bool FlutterMediaStream::GetUserAudio(const EncodableMap& constraints,
                                       scoped_refptr<RTCMediaStream> stream,
                                       EncodableMap& params) {
   bool enable_audio = false;
@@ -211,10 +213,15 @@ void FlutterMediaStream::GetUserAudio(const EncodableMap& constraints,
   // deviceId
 
   if (enable_audio) {
-    char strRecordingName[256];
-    char strRecordingGuid[256];
+    // RecordingDeviceName leaves the buffers untouched when it fails, so
+    // they must start zeroed or garbage ends up in the reply as deviceId.
+    char strRecordingName[256] = {0};
+    char strRecordingGuid[256] = {0};
     int playout_devices = base_->audio_device_->PlayoutDevices();
     int recording_devices = base_->audio_device_->RecordingDevices();
+    if (recording_devices <= 0) {
+      return false;
+    }
 
     for (uint16_t i = 0; i < recording_devices; i++) {
       base_->audio_device_->RecordingDeviceName(i, strRecordingName,
@@ -228,15 +235,17 @@ void FlutterMediaStream::GetUserAudio(const EncodableMap& constraints,
     }
 
     if (sourceId == "") {
-      base_->audio_device_->RecordingDeviceName(0, strRecordingName,
-                                                strRecordingGuid);
+      if (base_->audio_device_->RecordingDeviceName(0, strRecordingName,
+                                                    strRecordingGuid) != 0) {
+        return false;
+      }
       sourceId = SanitizeDeviceIdFromAudioBuffers(strRecordingName,
                                                   strRecordingGuid);
       base_->audio_device_->SetRecordingDevice(0);
     }
 
-    char strPlayoutName[256];
-    char strPlayoutGuid[256];
+    char strPlayoutName[256] = {0};
+    char strPlayoutGuid[256] = {0};
     for (uint16_t i = 0; i < playout_devices; i++) {
       base_->audio_device_->PlayoutDeviceName(i, strPlayoutName,
                                               strPlayoutGuid);
@@ -285,6 +294,7 @@ void FlutterMediaStream::GetUserAudio(const EncodableMap& constraints,
 
     base_->local_tracks_[track->id().std_string()] = track;
   }
+  return true;
 }
 
 std::string getFacingMode(const EncodableMap& mediaConstraints) {
