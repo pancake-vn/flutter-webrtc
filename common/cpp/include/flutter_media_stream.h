@@ -13,7 +13,8 @@ class FlutterMediaStream {
   void GetUserMedia(const EncodableMap& constraints,
                     std::unique_ptr<MethodResultProxy> result);
 
-  void GetUserAudio(const EncodableMap& constraints,
+  // Returns false when there is no recording device to capture from.
+  bool GetUserAudio(const EncodableMap& constraints,
                     scoped_refptr<RTCMediaStream> stream,
                     EncodableMap& params);
 
