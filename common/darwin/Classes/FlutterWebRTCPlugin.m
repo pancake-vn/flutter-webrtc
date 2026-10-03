@@ -19,6 +19,7 @@
 #import "AudioManager.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <os/lock.h>
 #import <WebRTC/RTCFieldTrials.h>
 #import <WebRTC/WebRTC.h>
 
@@ -106,6 +107,83 @@ void postEvent(FlutterEventSink _Nullable sink, id _Nullable event) {
       sink(event);
     });
 }
+
+void runOnMainThread(dispatch_block_t _Nonnull block) {
+  if (NSThread.isMainThread) {
+    block();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), block);
+  }
+}
+
+#if TARGET_OS_OSX
+// Where method calls run on macOS. Most of them wait on WebRTC's signaling or worker thread, and
+// the audio device module rebuilds its audio engine on the worker thread, which takes seconds: on
+// connecting, on switching a device, on a microphone starting or stopping. On macOS the main thread
+// is also Dart's, so waiting there froze the app. Serial, so calls run in the order Dart sent them.
+static dispatch_queue_t MethodCallQueue(void) {
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    queue = dispatch_queue_create("com.cloudwebrtc.flutterwebrtc.method-call", DISPATCH_QUEUE_SERIAL);
+  });
+  return queue;
+}
+
+// The plugin's maps, safe to use from more than one thread: method calls change them on
+// MethodCallQueue while other plugins read them on the main thread, as LiveKit does to find a
+// track for its visualizer. Enumeration walks a snapshot of the keys.
+@interface FlutterWebRTCLockedDictionary : NSMutableDictionary
+@end
+
+@implementation FlutterWebRTCLockedDictionary {
+  NSMutableDictionary* _storage;
+  os_unfair_lock _lock;
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _storage = [NSMutableDictionary new];
+    _lock = OS_UNFAIR_LOCK_INIT;
+  }
+  return self;
+}
+
+- (NSUInteger)count {
+  os_unfair_lock_lock(&_lock);
+  NSUInteger count = _storage.count;
+  os_unfair_lock_unlock(&_lock);
+  return count;
+}
+
+- (id)objectForKey:(id)key {
+  os_unfair_lock_lock(&_lock);
+  id object = _storage[key];
+  os_unfair_lock_unlock(&_lock);
+  return object;
+}
+
+- (NSEnumerator*)keyEnumerator {
+  os_unfair_lock_lock(&_lock);
+  NSArray* keys = _storage.allKeys;
+  os_unfair_lock_unlock(&_lock);
+  return keys.objectEnumerator;
+}
+
+- (void)setObject:(id)object forKey:(id<NSCopying>)key {
+  os_unfair_lock_lock(&_lock);
+  _storage[key] = object;
+  os_unfair_lock_unlock(&_lock);
+}
+
+- (void)removeObjectForKey:(id)key {
+  os_unfair_lock_lock(&_lock);
+  [_storage removeObjectForKey:key];
+  os_unfair_lock_unlock(&_lock);
+}
+@end
+#endif
 
 @implementation FlutterWebRTCPlugin {
 #pragma clang diagnostic pop
@@ -280,14 +358,19 @@ static void FlutterWebRTCApplyFieldTrials(void) {
 
   FlutterWebRTCApplyFieldTrials();
 
-  self.peerConnections = [NSMutableDictionary new];
-  self.localStreams = [NSMutableDictionary new];
-  self.localTracks = [NSMutableDictionary new];
-  self.renders = [NSMutableDictionary new];
-  self.frameCryptors = [NSMutableDictionary new];
-  self.dataCryptors = [NSMutableDictionary new];
-  self.keyProviders = [NSMutableDictionary new];
-  self.videoCapturerStopHandlers = [NSMutableDictionary new];
+#if TARGET_OS_OSX
+  Class Map = [FlutterWebRTCLockedDictionary class];
+#else
+  Class Map = [NSMutableDictionary class];
+#endif
+  self.peerConnections = [Map new];
+  self.localStreams = [Map new];
+  self.localTracks = [Map new];
+  self.renders = [Map new];
+  self.frameCryptors = [Map new];
+  self.dataCryptors = [Map new];
+  self.keyProviders = [Map new];
+  self.videoCapturerStopHandlers = [Map new];
   self.recorders = [NSMutableDictionary new];
 #if TARGET_OS_IPHONE
   self.focusMode = @"locked";
@@ -491,6 +574,22 @@ static void FlutterWebRTCApplyFieldTrials(void) {
 }
 
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
+#if TARGET_OS_OSX
+  // See MethodCallQueue. Flutter takes replies on the main thread.
+  FlutterResult reply = ^(id _Nullable value) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      result(value);
+    });
+  };
+  dispatch_async(MethodCallQueue(), ^{
+    [self runMethodCall:call result:reply];
+  });
+#else
+  [self runMethodCall:call result:result];
+#endif
+}
+
+- (void)runMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
   if ([@"initialize" isEqualToString:call.method]) {
     NSDictionary* argsMap = call.arguments;
     NSDictionary* options = argsMap[@"options"];
@@ -547,11 +646,13 @@ static void FlutterWebRTCApplyFieldTrials(void) {
     peerConnection.flutterId = peerConnectionId;
 
     /*Create Event Channel.*/
-    peerConnection.eventChannel = [FlutterEventChannel
-        eventChannelWithName:[NSString stringWithFormat:@"FlutterWebRTC/peerConnectionEvent%@",
-                                                        peerConnectionId]
-             binaryMessenger:_messenger];
-    [peerConnection.eventChannel setStreamHandler:peerConnection];
+    runOnMainThread(^{
+      peerConnection.eventChannel = [FlutterEventChannel
+          eventChannelWithName:[NSString stringWithFormat:@"FlutterWebRTC/peerConnectionEvent%@",
+                                                          peerConnectionId]
+               binaryMessenger:self->_messenger];
+      [peerConnection.eventChannel setStreamHandler:peerConnection];
+    });
 
     self.peerConnections[peerConnectionId] = peerConnection;
     result(@{@"peerConnectionId" : peerConnectionId});
@@ -1016,8 +1117,10 @@ static void FlutterWebRTCApplyFieldTrials(void) {
     [self deactiveRtcAudioSession];
     result(nil);
   } else if ([@"createVideoRenderer" isEqualToString:call.method]) {
-    FlutterRTCVideoRenderer* render = [self createWithTextureRegistry:_textures
-                                                            messenger:_messenger];
+    __block FlutterRTCVideoRenderer* render = nil;
+    runOnMainThread(^{
+      render = [self createWithTextureRegistry:self->_textures messenger:self->_messenger];
+    });
     self.renders[@(render.textureId)] = render;
     result(@{@"textureId" : @(render.textureId)});
   } else if ([@"videoRendererDispose" isEqualToString:call.method]) {
@@ -1026,7 +1129,9 @@ static void FlutterWebRTCApplyFieldTrials(void) {
     FlutterRTCVideoRenderer* render = self.renders[textureId];
     if(render != nil) {
       render.videoTrack = nil;
-      [render dispose];
+      runOnMainThread(^{
+        [render dispose];
+      });
       [self.renders removeObjectForKey:textureId];
     }
     result(nil);

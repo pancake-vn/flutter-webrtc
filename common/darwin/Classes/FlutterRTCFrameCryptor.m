@@ -190,7 +190,9 @@
 
     frameCryptor.eventQueue = [NSMutableArray array];
     frameCryptor.eventChannel = eventChannel;
-    [eventChannel setStreamHandler:frameCryptor];
+    runOnMainThread(^{
+      [eventChannel setStreamHandler:frameCryptor];
+    });
     frameCryptor.delegate = self;
 
     self.frameCryptors[frameCryptorId] = frameCryptor;
@@ -217,7 +219,9 @@
 
     frameCryptor.eventQueue = [NSMutableArray array];
     frameCryptor.eventChannel = eventChannel;
-    [eventChannel setStreamHandler:frameCryptor];
+    runOnMainThread(^{
+      [eventChannel setStreamHandler:frameCryptor];
+    });
     frameCryptor.delegate = self;
     self.frameCryptors[frameCryptorId] = frameCryptor;
     result(@{@"frameCryptorId" : frameCryptorId});
