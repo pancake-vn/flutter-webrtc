@@ -15,6 +15,11 @@
 
 void postEvent(FlutterEventSink _Nonnull sink, id _Nullable event);
 
+// Runs [block] on the main thread and waits for it. For the Flutter engine calls a method call
+// makes, such as registering a texture or an event channel: on macOS method calls run on a
+// background queue.
+void runOnMainThread(dispatch_block_t _Nonnull block);
+
 typedef void (^CompletionHandler)(void);
 
 typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
