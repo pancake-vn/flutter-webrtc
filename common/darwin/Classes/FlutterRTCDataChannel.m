@@ -94,7 +94,9 @@
              binaryMessenger:messenger];
 
     dataChannel.eventChannel = eventChannel;
-    [eventChannel setStreamHandler:dataChannel];
+    runOnMainThread(^{
+      [eventChannel setStreamHandler:dataChannel];
+    });
 
     result(@{
       @"label" : label,
@@ -113,7 +115,9 @@
     FlutterEventChannel* eventChannel = dataChannel.eventChannel;
     [dataChannel close];
     [dataChannels removeObjectForKey:dataChannelId];
-    [eventChannel setStreamHandler:nil];
+    runOnMainThread(^{
+      [eventChannel setStreamHandler:nil];
+    });
     dataChannel.eventChannel = nil;
   }
 }

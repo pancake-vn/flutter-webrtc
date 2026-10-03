@@ -159,7 +159,9 @@
              binaryMessenger:self.messenger];
 
     frameCryptor.eventChannel = eventChannel;
-    [eventChannel setStreamHandler:frameCryptor];
+    runOnMainThread(^{
+      [eventChannel setStreamHandler:frameCryptor];
+    });
     frameCryptor.delegate = self;
 
     self.frameCryptors[frameCryptorId] = frameCryptor;
@@ -185,7 +187,9 @@
              binaryMessenger:self.messenger];
 
     frameCryptor.eventChannel = eventChannel;
-    [eventChannel setStreamHandler:frameCryptor];
+    runOnMainThread(^{
+      [eventChannel setStreamHandler:frameCryptor];
+    });
     frameCryptor.delegate = self;
     self.frameCryptors[frameCryptorId] = frameCryptor;
     result(@{@"frameCryptorId" : frameCryptorId});
