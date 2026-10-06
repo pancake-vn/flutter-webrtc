@@ -19,15 +19,18 @@ add_definitions(-DFLUTTER_ELINUX)
 
 add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_data_channel.cc"
+  "../common/cpp/src/flutter_data_packet_cryptor.cc"
   "../common/cpp/src/flutter_frame_cryptor.cc"
   "../common/cpp/src/flutter_frame_capturer.cc"
   "../common/cpp/src/flutter_media_stream.cc"
+  "../common/cpp/src/flutter_utf8_sanitize.cc"
   "../common/cpp/src/flutter_peerconnection.cc"
   "../common/cpp/src/flutter_video_renderer.cc"
   "../common/cpp/src/flutter_screen_capture.cc"
   "../common/cpp/src/flutter_webrtc.cc"
   "../common/cpp/src/flutter_webrtc_base.cc"
   "../common/cpp/src/flutter_common.cc"
+  "../linux/loopback_capturer_factory.cc"
   "flutter_webrtc_plugin.cc"
 )
 
@@ -49,12 +52,12 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE 
   flutter
   flutter_wrapper_plugin
-  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/lib/${FLUTTER_TARGET_PLATFORM}/libwebrtc.so"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/lib/libwebrtc.so"
 )
 
 # List of absolute paths to libraries that should be bundled with the plugin
 set(flutter_webrtc_bundled_libraries
-  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/lib/${FLUTTER_TARGET_PLATFORM}/libwebrtc.so"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/lib/libwebrtc.so"
   PARENT_SCOPE
 )
 
