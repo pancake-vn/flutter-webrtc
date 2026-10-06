@@ -15,6 +15,7 @@
 #include "rtc_audio_processing.h"
 #include "rtc_desktop_device.h"
 #include "rtc_dtmf_sender.h"
+#include "rtc_frame_cryptor.h"
 #include "rtc_media_stream.h"
 #include "rtc_media_track.h"
 #include "rtc_mediaconstraints.h"
@@ -39,13 +40,24 @@ class FlutterWebRTCBase {
   friend class FlutterPeerConnectionObserver;
   friend class FlutterScreenCapture;
   friend class FlutterFrameCryptor;
+  friend class FlutterDataPacketCryptor;
   enum ParseConstraintType { kMandatory, kOptional };
 
  public:
-  FlutterWebRTCBase(BinaryMessenger* messenger, TextureRegistrar* textures, TaskRunner* task_runner);
+  FlutterWebRTCBase(BinaryMessenger* messenger,
+                    TextureRegistrar* textures,
+                    TaskRunner* task_runner);
   ~FlutterWebRTCBase();
 
+  // Initializes WebRTC and creates the peer connection factory the first time
+  // it is needed, applying the process global field trials that the
+  // `initialize()` options ask for. Field trials are read when the factory is
+  // created, so only the first call decides them; later calls are no-ops.
+  void EnsureWebRTCInitialized(bool enable_warp = false,
+                               bool zero_playout_delay = false);
+
   virtual scoped_refptr<RTCAudioProcessing> audio_processing() {
+    EnsureWebRTCInitialized();
     return audio_processing_;
   }
 
@@ -85,7 +97,6 @@ class FlutterWebRTCBase {
 
   EventChannelProxy* event_channel();
 
-
   libwebrtc::scoped_refptr<libwebrtc::RTCRtpSender> GetRtpSenderById(
       RTCPeerConnection* pc,
       std::string id);
@@ -93,6 +104,9 @@ class FlutterWebRTCBase {
   libwebrtc::scoped_refptr<libwebrtc::RTCRtpReceiver> GetRtpReceiverById(
       RTCPeerConnection* pc,
       std::string id);
+
+  libwebrtc::scoped_refptr<libwebrtc::KeyProvider> GetKeyProviderForId(
+      const std::string& keyProviderId);
 
  private:
   void ParseConstraints(const EncodableMap& src,
@@ -103,6 +117,10 @@ class FlutterWebRTCBase {
                         IceServer* ice_servers);
 
  protected:
+  bool webrtc_initialized_ = false;
+  // Whether `enableWARP` was requested; peer connections created afterwards
+  // default to DSCP marking. See EnsureWebRTCInitialized().
+  bool warp_enabled_ = false;
   scoped_refptr<RTCPeerConnectionFactory> factory_;
   scoped_refptr<RTCAudioDevice> audio_device_;
   scoped_refptr<RTCVideoDevice> video_device_;
@@ -110,6 +128,7 @@ class FlutterWebRTCBase {
   scoped_refptr<RTCAudioProcessing> audio_processing_;
   RTCConfiguration configuration_;
 
+  std::map<std::string, scoped_refptr<libwebrtc::KeyProvider>> key_providers_;
   std::map<std::string, scoped_refptr<RTCPeerConnection>> peerconnections_;
   std::map<std::string, scoped_refptr<RTCMediaStream>> local_streams_;
   std::map<std::string, scoped_refptr<RTCMediaTrack>> local_tracks_;
@@ -126,7 +145,7 @@ class FlutterWebRTCBase {
 
  protected:
   BinaryMessenger* messenger_;
-  TaskRunner *task_runner_;
+  TaskRunner* task_runner_;
   TextureRegistrar* textures_;
   std::unique_ptr<EventChannelProxy> event_channel_;
 };
