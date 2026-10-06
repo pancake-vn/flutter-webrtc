@@ -371,6 +371,10 @@ static void FlutterWebRTCApplyFieldTrials(void) {
   self.dataCryptors = [Map new];
   self.keyProviders = [Map new];
   self.videoCapturerStopHandlers = [Map new];
+#if TARGET_OS_OSX
+  // Filled on the main thread when the engine creates a platform view, read by method calls.
+  _platformViewFactory.renders = [Map new];
+#endif
   self.recorders = [NSMutableDictionary new];
 #if TARGET_OS_IPHONE
   self.focusMode = @"locked";
@@ -1104,12 +1108,17 @@ static void FlutterWebRTCApplyFieldTrials(void) {
         // Dart cancels its event subscriptions before it calls dispose, so this
         // is the first point where the stream handlers can go without leaving a
         // pending cancel unanswered. Releasing them on close would do exactly that.
-        for (NSString* dataChannelId in dataChannels) {
-          [dataChannels[dataChannelId].eventChannel setStreamHandler:nil];
-          dataChannels[dataChannelId].eventChannel = nil;
+        NSArray<RTCDataChannel*>* closedDataChannels = dataChannels.allValues;
+        runOnMainThread(^{
+          for (RTCDataChannel* dataChannel in closedDataChannels) {
+            [dataChannel.eventChannel setStreamHandler:nil];
+          }
+          [peerConnection.eventChannel setStreamHandler:nil];
+        });
+        for (RTCDataChannel* dataChannel in closedDataChannels) {
+          dataChannel.eventChannel = nil;
         }
         [dataChannels removeAllObjects];
-        [peerConnection.eventChannel setStreamHandler:nil];
         peerConnection.eventChannel = nil;
         [self.peerConnections removeObjectForKey:peerConnectionId];
       }
@@ -1212,7 +1221,11 @@ static void FlutterWebRTCApplyFieldTrials(void) {
       NSNumber* viewId = argsMap[@"viewId"];
       FlutterRTCVideoPlatformViewController* render = _platformViewFactory.renders[viewId];
       if(render != nil) {
-        [render dispose];
+        // Detach off the main thread: removing a renderer waits on WebRTC's worker thread.
+        render.videoTrack = nil;
+        runOnMainThread(^{
+          [render dispose];
+        });
         [_platformViewFactory.renders removeObjectForKey:viewId];
       }
       result(nil);

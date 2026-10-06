@@ -348,7 +348,10 @@
   // channel retains its stream handler, the handler retains the channel via the
   // associated object). Mirrors Android's frameCryptor.dispose().
   frameCryptor.delegate = nil;
-  [frameCryptor.eventChannel setStreamHandler:nil];
+  FlutterEventChannel* eventChannel = frameCryptor.eventChannel;
+  runOnMainThread(^{
+    [eventChannel setStreamHandler:nil];
+  });
   frameCryptor.eventChannel = nil;
   frameCryptor.eventSink = nil;
   @synchronized(frameCryptor) {
