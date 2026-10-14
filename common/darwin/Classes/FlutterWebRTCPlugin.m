@@ -116,11 +116,11 @@ void runOnMainThread(dispatch_block_t _Nonnull block) {
   }
 }
 
-#if TARGET_OS_OSX
-// Where method calls run on macOS. Most of them wait on WebRTC's signaling or worker thread, and
-// the audio device module rebuilds its audio engine on the worker thread, which takes seconds: on
-// connecting, on switching a device, on a microphone starting or stopping. On macOS the main thread
-// is also Dart's, so waiting there froze the app. Serial, so calls run in the order Dart sent them.
+// Where method calls run. Most of them wait on WebRTC's signaling or worker thread, and the audio
+// device module rebuilds its audio engine on the worker thread, which takes from a few hundred
+// milliseconds on iOS to seconds on macOS: on connecting, on switching a device, on a microphone
+// starting or stopping. On both the main thread is also Dart's, so waiting there froze the app on
+// macOS and dropped frames on iOS. Serial, so calls run in the order Dart sent them.
 static dispatch_queue_t MethodCallQueue(void) {
   static dispatch_queue_t queue;
   static dispatch_once_t once;
@@ -183,7 +183,6 @@ static dispatch_queue_t MethodCallQueue(void) {
   os_unfair_lock_unlock(&_lock);
 }
 @end
-#endif
 
 @implementation FlutterWebRTCPlugin {
 #pragma clang diagnostic pop
@@ -358,11 +357,7 @@ static void FlutterWebRTCApplyFieldTrials(void) {
 
   FlutterWebRTCApplyFieldTrials();
 
-#if TARGET_OS_OSX
   Class Map = [FlutterWebRTCLockedDictionary class];
-#else
-  Class Map = [NSMutableDictionary class];
-#endif
   self.peerConnections = [Map new];
   self.localStreams = [Map new];
   self.localTracks = [Map new];
@@ -371,10 +366,8 @@ static void FlutterWebRTCApplyFieldTrials(void) {
   self.dataCryptors = [Map new];
   self.keyProviders = [Map new];
   self.videoCapturerStopHandlers = [Map new];
-#if TARGET_OS_OSX
   // Filled on the main thread when the engine creates a platform view, read by method calls.
   _platformViewFactory.renders = [Map new];
-#endif
   self.recorders = [NSMutableDictionary new];
 #if TARGET_OS_IPHONE
   self.focusMode = @"locked";
@@ -578,7 +571,6 @@ static void FlutterWebRTCApplyFieldTrials(void) {
 }
 
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
-#if TARGET_OS_OSX
   // See MethodCallQueue. Flutter takes replies on the main thread.
   FlutterResult reply = ^(id _Nullable value) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -588,9 +580,6 @@ static void FlutterWebRTCApplyFieldTrials(void) {
   dispatch_async(MethodCallQueue(), ^{
     [self runMethodCall:call result:reply];
   });
-#else
-  [self runMethodCall:call result:result];
-#endif
 }
 
 - (void)runMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
