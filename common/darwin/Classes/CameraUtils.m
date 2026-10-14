@@ -152,7 +152,10 @@
     result([FlutterError errorWithCode:@"mediaStreamTrackSetFocusPointFailed" message:@"Focus point of interest is not supported" details:nil]);
     return;
   }
-  UIDeviceOrientation orientation = [[UIDevice currentDevice] orientation];
+  __block UIDeviceOrientation orientation;
+  runOnMainThread(^{
+    orientation = [[UIDevice currentDevice] orientation];
+  });
   [device lockForConfiguration:nil];
 
   [device setFocusPointOfInterest:[self getCGPointForCoordsWithOrientation:orientation
@@ -256,7 +259,10 @@
     result([FlutterError errorWithCode:@"mediaStreamTrackSetExposurePointFailed" message:@"Exposure point of interest is not supported" details:nil]);
     return;
   }
-  UIDeviceOrientation orientation = [[UIDevice currentDevice] orientation];
+  __block UIDeviceOrientation orientation;
+  runOnMainThread(^{
+    orientation = [[UIDevice currentDevice] orientation];
+  });
   [device lockForConfiguration:nil];
   [device setExposurePointOfInterest:[self getCGPointForCoordsWithOrientation:orientation
                                                                                     x:x
