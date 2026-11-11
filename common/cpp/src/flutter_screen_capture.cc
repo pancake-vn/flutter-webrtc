@@ -1,5 +1,6 @@
 #include "flutter_screen_capture.h"
 #include "flutter_utf8_sanitize.h"
+#include "task_runner.h"
 
 #include <stdexcept>
 
