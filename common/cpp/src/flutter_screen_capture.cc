@@ -1,5 +1,6 @@
 #include "flutter_screen_capture.h"
 #include "flutter_utf8_sanitize.h"
+#include "task_runner.h"
 
 #include <stdexcept>
 
@@ -8,10 +9,21 @@ namespace flutter_webrtc_plugin {
 FlutterScreenCapture::FlutterScreenCapture(FlutterWebRTCBase* base)
     : base_(base) {}
 
-bool FlutterScreenCapture::BuildDesktopSourcesList(const EncodableList& types,
-                                                   bool force_reload) {
+FlutterScreenCapture::~FlutterScreenCapture() {
+  alive_.reset();
+  {
+    std::lock_guard<std::mutex> lock(lister_mutex_);
+    lister_stopping_ = true;
+    lister_tasks_.clear();
+  }
+  lister_wake_.notify_all();
+  if (lister_.joinable()) lister_.join();
+}
+
+bool FlutterScreenCapture::UpdateMediaLists(const EncodableList& types,
+                                            bool force_reload,
+                                            SourceList* sources) {
   size_t size = types.size();
-  sources_.clear();
   for (size_t i = 0; i < size; i++) {
     std::string type_str = GetValue<std::string>(types[i]);
     DesktopType desktop_type = DesktopType::kScreen;
@@ -42,51 +54,110 @@ bool FlutterScreenCapture::BuildDesktopSourcesList(const EncodableList& types,
 #endif
     int count = source_list->GetSourceCount();
     for (int j = 0; j < count; j++) {
-      sources_.push_back(source_list->GetSource(j));
+      sources->push_back(source_list->GetSource(j));
     }
   }
   return true;
 }
 
+bool FlutterScreenCapture::BuildDesktopSourcesList(const EncodableList& types,
+                                                   bool force_reload) {
+  SourceList sources;
+  bool ok = UpdateMediaLists(types, force_reload, &sources);
+  sources_ = std::move(sources);
+  return ok;
+}
+
+void FlutterScreenCapture::RunLister() {
+  for (;;) {
+    std::function<void()> task;
+    {
+      std::unique_lock<std::mutex> lock(lister_mutex_);
+      lister_wake_.wait(
+          lock, [this] { return lister_stopping_ || !lister_tasks_.empty(); });
+      if (lister_stopping_) return;
+      task = std::move(lister_tasks_.front());
+      lister_tasks_.pop_front();
+    }
+    task();
+  }
+}
+
+void FlutterScreenCapture::ListSources(const EncodableList& types,
+                                       bool force_reload,
+                                       std::function<void(bool ok)> done) {
+#ifdef _WIN32
+  TaskRunner* platform = base_->platform_task_runner();
+  if (platform) {
+    std::weak_ptr<bool> alive = alive_;
+    std::lock_guard<std::mutex> lock(lister_mutex_);
+    if (!lister_.joinable()) lister_ = std::thread([this] { RunLister(); });
+    lister_tasks_.push_back([this, platform, alive, types, force_reload,
+                             done = std::move(done)]() {
+      auto sources = std::make_shared<SourceList>();
+      bool ok = UpdateMediaLists(types, force_reload, sources.get());
+      // Checked under the lock the destructor sets it with, so nothing is
+      // posted to a platform runner that is going away.
+      std::lock_guard<std::mutex> stop_lock(lister_mutex_);
+      if (lister_stopping_) return;
+      platform->EnqueueTask([this, alive, sources, ok, done]() {
+        if (alive.expired()) return;
+        sources_ = std::move(*sources);
+        done(ok);
+      });
+    });
+    lister_wake_.notify_one();
+    return;
+  }
+#endif
+  done(BuildDesktopSourcesList(types, force_reload));
+}
+
 void FlutterScreenCapture::GetDesktopSources(
     const EncodableList& types,
     std::unique_ptr<MethodResultProxy> result) {
-  if (!BuildDesktopSourcesList(types, true)) {
-    result->Error("Bad Arguments", "Failed to get desktop sources");
-    return;
-  }
+  std::shared_ptr<MethodResultProxy> reply = std::move(result);
+  ListSources(types, true, [this, reply](bool ok) {
+    if (!ok) {
+      reply->Error("Bad Arguments", "Failed to get desktop sources");
+      return;
+    }
 
-  EncodableList sources;
-  for (auto source : sources_) {
-    EncodableMap info;
-    info[EncodableValue("id")] = EncodableValue(source->id().std_string());
-    info[EncodableValue("name")] =
-        EncodableValue(SanitizeUtf8ForFlutter(source->name().std_string()));
-    info[EncodableValue("type")] =
-        EncodableValue(source->type() == kWindow ? "window" : "screen");
-    // TODO "thumbnailSize"
-    info[EncodableValue("thumbnailSize")] = EncodableMap{
-        {EncodableValue("width"), EncodableValue(0)},
-        {EncodableValue("height"), EncodableValue(0)},
-    };
-    sources.push_back(EncodableValue(info));
-  }
+    EncodableList sources;
+    for (auto source : sources_) {
+      EncodableMap info;
+      info[EncodableValue("id")] = EncodableValue(source->id().std_string());
+      info[EncodableValue("name")] =
+          EncodableValue(SanitizeUtf8ForFlutter(source->name().std_string()));
+      info[EncodableValue("type")] =
+          EncodableValue(source->type() == kWindow ? "window" : "screen");
+      // TODO "thumbnailSize"
+      info[EncodableValue("thumbnailSize")] = EncodableMap{
+          {EncodableValue("width"), EncodableValue(0)},
+          {EncodableValue("height"), EncodableValue(0)},
+      };
+      sources.push_back(EncodableValue(info));
+    }
 
-  auto map = EncodableMap();
-  map[EncodableValue("sources")] = sources;
-  result->Success(EncodableValue(map));
+    auto map = EncodableMap();
+    map[EncodableValue("sources")] = sources;
+    reply->Success(EncodableValue(map));
+  });
 }
 
 void FlutterScreenCapture::UpdateDesktopSources(
     const EncodableList& types,
     std::unique_ptr<MethodResultProxy> result) {
-  if (!BuildDesktopSourcesList(types, false)) {
-    result->Error("Bad Arguments", "Failed to update desktop sources");
-    return;
-  }
-  auto map = EncodableMap();
-  map[EncodableValue("result")] = true;
-  result->Success(EncodableValue(map));
+  std::shared_ptr<MethodResultProxy> reply = std::move(result);
+  ListSources(types, false, [reply](bool ok) {
+    if (!ok) {
+      reply->Error("Bad Arguments", "Failed to update desktop sources");
+      return;
+    }
+    auto map = EncodableMap();
+    map[EncodableValue("result")] = true;
+    reply->Success(EncodableValue(map));
+  });
 }
 
 void FlutterScreenCapture::OnMediaSourceAdded(

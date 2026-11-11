@@ -34,7 +34,9 @@ class FlutterWebRTCPluginImpl : public FlutterWebRTCPlugin {
     registrar->AddPlugin(std::move(plugin));
   }
 
-  virtual ~FlutterWebRTCPluginImpl() {}
+  // Members go in reverse order, which would take the task runner first;
+  // FlutterWebRTC posts to it while it shuts down.
+  virtual ~FlutterWebRTCPluginImpl() { webrtc_.reset(); }
 
   BinaryMessenger* messenger() { return messenger_; }
 

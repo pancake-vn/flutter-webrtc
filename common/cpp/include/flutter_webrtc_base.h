@@ -97,6 +97,9 @@ class FlutterWebRTCBase {
 
   EventChannelProxy* event_channel();
 
+  // Runs tasks on the platform thread. Null where the host gives none.
+  TaskRunner* platform_task_runner() const { return task_runner_; }
+
   libwebrtc::scoped_refptr<libwebrtc::RTCRtpSender> GetRtpSenderById(
       RTCPeerConnection* pc,
       std::string id);
