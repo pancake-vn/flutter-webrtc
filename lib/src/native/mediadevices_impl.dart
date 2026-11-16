@@ -7,6 +7,7 @@ import 'package:webrtc_interface/webrtc_interface.dart';
 import '../helper.dart';
 import 'event_channel.dart';
 import 'media_stream_impl.dart';
+import 'media_stream_track_impl.dart';
 import 'utils.dart';
 
 class MediaDeviceNative extends MediaDevices {
@@ -24,6 +25,9 @@ class MediaDeviceNative extends MediaDevices {
     switch (map['event']) {
       case 'onDeviceChange':
         ondevicechange?.call(null);
+        break;
+      case 'mediaStreamTrackEnded':
+        MediaStreamTrackNative.platformEnded(map['trackId'] as String);
         break;
     }
   }
@@ -89,6 +93,9 @@ class MediaDeviceNative extends MediaDevices {
       String streamId = response['streamId'];
       var stream = MediaStreamNative(streamId, 'local');
       stream.setMediaTracks(response['audioTracks'], response['videoTracks']);
+      for (final track in stream.getVideoTracks()) {
+        (track as MediaStreamTrackNative).watchPlatformEnd();
+      }
       return stream;
     } on PlatformException catch (e) {
       throw 'Unable to getDisplayMedia: ${e.message}';
