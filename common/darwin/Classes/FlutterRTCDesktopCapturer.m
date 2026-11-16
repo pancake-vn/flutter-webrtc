@@ -266,7 +266,8 @@ NSArray<RTCDesktopSource*>* _captureSources;
     result(@{@"error" : @"No source found"});
     return;
   }
-  NSImage* image = [object UpdateThumbnail];
+  [object UpdateThumbnail];
+  NSImage* image = [self thumbnailForSource:object];
   if (image != nil) {
     NSImage* resizedImg = [self resizeImage:image forSize:NSMakeSize(320, 180)];
     NSData* data = [resizedImg TIFFRepresentation];
@@ -299,6 +300,33 @@ NSArray<RTCDesktopSource*>* _captureSources;
 }
 
 #if TARGET_OS_OSX
+// A screen is captured here: WebRTC's own thumbnail of one comes out sheared
+// when the screen's pixel width is not a multiple of 16.
+- (NSImage*)thumbnailForSource:(RTCDesktopSource*)source {
+  if (source.sourceType != RTCDesktopSourceTypeScreen) {
+    return source.thumbnail;
+  }
+  // A screen's source id is its display id. An id that is not online would
+  // capture the main display instead.
+  CGDirectDisplayID displayID = (CGDirectDisplayID)source.sourceId.longLongValue;
+  CGDirectDisplayID online[16];
+  uint32_t onlineCount = 0;
+  CGGetOnlineDisplayList(16, online, &onlineCount);
+  CGImageRef image = NULL;
+  for (uint32_t i = 0; i < onlineCount; i++) {
+    if (online[i] == displayID) {
+      image = CGDisplayCreateImage(displayID);
+      break;
+    }
+  }
+  if (image == NULL) {
+    return source.thumbnail;
+  }
+  NSImage* thumbnail = [[NSImage alloc] initWithCGImage:image size:NSZeroSize];
+  CGImageRelease(image);
+  return thumbnail;
+}
+
 - (NSImage*)resizeImage:(NSImage*)sourceImage forSize:(CGSize)targetSize {
   CGSize imageSize = sourceImage.size;
   CGFloat width = imageSize.width;
@@ -308,7 +336,6 @@ NSArray<RTCDesktopSource*>* _captureSources;
   CGFloat scaleFactor = 0.0;
   CGFloat scaledWidth = targetWidth;
   CGFloat scaledHeight = targetHeight;
-  CGPoint thumbnailPoint = CGPointMake(0.0, 0.0);
 
   if (CGSizeEqualToSize(imageSize, targetSize) == NO) {
     CGFloat widthFactor = targetWidth / width;
@@ -318,17 +345,10 @@ NSArray<RTCDesktopSource*>* _captureSources;
     scaleFactor = (widthFactor > heightFactor) ? widthFactor : heightFactor;
     scaledWidth = ceil(width * scaleFactor);
     scaledHeight = ceil(height * scaleFactor);
-
-    // center the image
-    if (widthFactor > heightFactor) {
-      thumbnailPoint.y = (targetHeight - scaledHeight) * 0.5;
-    } else if (widthFactor < heightFactor) {
-      thumbnailPoint.x = (targetWidth - scaledWidth) * 0.5;
-    }
   }
 
   NSImage* newImage = [[NSImage alloc] initWithSize:NSMakeSize(scaledWidth, scaledHeight)];
-  CGRect thumbnailRect = {thumbnailPoint, {scaledWidth, scaledHeight}};
+  CGRect thumbnailRect = {CGPointZero, {scaledWidth, scaledHeight}};
   NSRect imageRect = NSMakeRect(0.0, 0.0, width, height);
 
   [newImage lockFocus];
@@ -405,7 +425,8 @@ NSArray<RTCDesktopSource*>* _captureSources;
 - (void)didDesktopSourceAdded:(RTC_OBJC_TYPE(RTCDesktopSource) *)source {
   // NSLog(@"didDesktopSourceAdded: %@, id %@", source.name, source.sourceId);
   if (self.eventSink) {
-    NSImage* image = [source UpdateThumbnail];
+    [source UpdateThumbnail];
+    NSImage* image = [self thumbnailForSource:source];
     NSData* data = [[NSData alloc] init];
     if (image != nil) {
       NSImage* resizedImg = [self resizeImage:image forSize:NSMakeSize(320, 180)];
@@ -449,7 +470,7 @@ NSArray<RTCDesktopSource*>* _captureSources;
 - (void)didDesktopSourceThumbnailChanged:(RTC_OBJC_TYPE(RTCDesktopSource) *)source {
   // NSLog(@"didDesktopSourceThumbnailChanged: %@, id %@", source.name, source.sourceId);
   if (self.eventSink) {
-    NSImage* resizedImg = [self resizeImage:[source thumbnail] forSize:NSMakeSize(320, 180)];
+    NSImage* resizedImg = [self resizeImage:[self thumbnailForSource:source] forSize:NSMakeSize(320, 180)];
     NSData* data = [resizedImg TIFFRepresentation];
     postEvent(self.eventSink, @{
       @"event" : @"desktopSourceThumbnailChanged",
