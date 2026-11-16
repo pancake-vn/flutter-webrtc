@@ -18,6 +18,17 @@ class MediaStreamTrackNative extends MediaStreamTrack {
     return MediaStreamTrackNative(map['id'], map['label'], map['kind'],
         map['enabled'], peerConnectionId, map['settings'] ?? {});
   }
+
+  /// Local tracks the platform may end on its own, by id: a screen capture the OS stopped.
+  static final _endable = <String, MediaStreamTrackNative>{};
+
+  /// Reports the platform ending [trackId] through its `onEnded`, once.
+  static void platformEnded(String trackId) =>
+      _endable.remove(trackId)?.onEnded?.call();
+
+  /// Lets the platform end this track: see [platformEnded].
+  void watchPlatformEnd() => _endable[_trackId] = this;
+
   final String _trackId;
   final String _label;
   final String _kind;
@@ -124,6 +135,7 @@ class MediaStreamTrackNative extends MediaStreamTrack {
 
   @override
   Future<void> stop() async {
+    _endable.remove(_trackId);
     await WebRTC.invokeMethod(
       'trackDispose',
       <String, dynamic>{'trackId': _trackId},

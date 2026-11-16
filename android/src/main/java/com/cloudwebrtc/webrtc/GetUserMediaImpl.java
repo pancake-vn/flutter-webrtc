@@ -532,6 +532,8 @@ public class GetUserMediaImpl {
         /* Create ScreenCapture */
         VideoTrack displayTrack = null;
         VideoCapturer videoCapturer = null;
+        // Known once the track exists, after the capturer that reports the stop.
+        final String[] displayTrackId = new String[1];
         videoCapturer =
                 new OrientationAwareScreenCapturer(
                         mediaProjectionData,
@@ -539,9 +541,15 @@ public class GetUserMediaImpl {
                             @Override
                             public void onStop() {
                                 super.onStop();
-                                // After Huawei P30 and Android 10 version test, the onstop method is called, which will not affect the next process,
-                                // and there is no need to call the resulterror method
-                                //resultError("MediaProjection.Callback()", "User revoked permission to capture the screen.", result);
+                                // The OS stopped the capture: the user revoked it from the status bar or the
+                                // screen locked. The app's own stop unregisters this callback first.
+                                String trackId = displayTrackId[0];
+                                FlutterWebRTCPlugin plugin = FlutterWebRTCPlugin.sharedSingleton;
+                                if (trackId == null || plugin == null) return;
+                                ConstraintsMap params = new ConstraintsMap();
+                                params.putString("event", "mediaStreamTrackEnded");
+                                params.putString("trackId", trackId);
+                                plugin.sendEvent(params.toMap());
                             }
                         });
         if (videoCapturer == null) {
@@ -579,6 +587,7 @@ public class GetUserMediaImpl {
         mVideoCapturers.put(trackId, info);
 
         displayTrack = pcFactory.createVideoTrack(trackId, videoSource);
+        displayTrackId[0] = trackId;
 
         ConstraintsArray audioTracks = new ConstraintsArray();
         ConstraintsArray videoTracks = new ConstraintsArray();
