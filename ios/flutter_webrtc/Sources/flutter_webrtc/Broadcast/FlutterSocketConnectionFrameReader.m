@@ -133,10 +133,19 @@ const NSUInteger kMaxReadLength = 10 * 1024;
 
 @end
 
+// A still screen brings no frames, and a viewer takes a share that sends none for a dead one: past this long
+// without a frame, the last one is sent again.
+static const int64_t kStillFrameIntervalNs = NSEC_PER_SEC;
+
 @implementation FlutterSocketConnectionFrameReader {
   mach_timebase_info_data_t _timebaseInfo;
   NSInteger _readLength;
   int64_t _startTimeStampNs;
+  // Under @synchronized(self): frames come on the socket's thread, and again from the timer's queue.
+  id<RTCVideoFrameBuffer> _lastBuffer;
+  RTCVideoRotation _lastRotation;
+  int64_t _lastTimeStampNs;
+  dispatch_source_t _stillFrameTimer;
 }
 
 - (instancetype)initWithDelegate:(__weak id<RTCVideoCapturerDelegate>)delegate {
@@ -154,11 +163,19 @@ const NSUInteger kMaxReadLength = 10 * 1024;
   self.connection = connection;
   self.message = nil;
 
+  [self startStillFrameTimer];
   [self.connection openWithStreamDelegate:self];
 }
 
 - (void)stopCapture {
+  [self stopStillFrameTimer];
   [self.connection close];
+}
+
+- (void)dealloc {
+  if (_stillFrameTimer) {
+    dispatch_source_cancel(_stillFrameTimer);
+  }
 }
 
 // MARK: Private Methods
@@ -196,17 +213,68 @@ const NSUInteger kMaxReadLength = 10 * 1024;
   }
 }
 
-- (void)didCaptureVideoFrame:(CVPixelBufferRef)pixelBuffer
-             withOrientation:(CGImagePropertyOrientation)orientation {
-  int64_t currentTime = mach_absolute_time();
-  int64_t currentTimeStampNs = currentTime * _timebaseInfo.numer / _timebaseInfo.denom;
+- (void)startStillFrameTimer {
+  [self stopStillFrameTimer];
 
+  dispatch_queue_t queue =
+      dispatch_queue_create("com.cloudwebrtc.flutterwebrtc.broadcast.still-frame", DISPATCH_QUEUE_SERIAL);
+  dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+  dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, kStillFrameIntervalNs / 2),
+                            kStillFrameIntervalNs / 2, kStillFrameIntervalNs / 10);
+  __weak __typeof__(self) weakSelf = self;
+  dispatch_source_set_event_handler(timer, ^{
+    [weakSelf sendLastFrameAgainIfStill];
+  });
+  dispatch_resume(timer);
+
+  @synchronized(self) {
+    _stillFrameTimer = timer;
+  }
+}
+
+- (void)stopStillFrameTimer {
+  @synchronized(self) {
+    if (_stillFrameTimer) {
+      dispatch_source_cancel(_stillFrameTimer);
+      _stillFrameTimer = nil;
+    }
+    _lastBuffer = nil;
+  }
+}
+
+- (void)sendLastFrameAgainIfStill {
+  @synchronized(self) {
+    if (!_lastBuffer || [self currentTimeStampNs] - _lastTimeStampNs < kStillFrameIntervalNs) {
+      return;
+    }
+    [self deliverBuffer:_lastBuffer rotation:_lastRotation];
+  }
+}
+
+- (int64_t)currentTimeStampNs {
+  return mach_absolute_time() * _timebaseInfo.numer / _timebaseInfo.denom;
+}
+
+// Under @synchronized(self).
+- (void)deliverBuffer:(id<RTCVideoFrameBuffer>)buffer rotation:(RTCVideoRotation)rotation {
+  int64_t currentTimeStampNs = [self currentTimeStampNs];
   if (_startTimeStampNs < 0) {
     _startTimeStampNs = currentTimeStampNs;
   }
 
+  _lastBuffer = buffer;
+  _lastRotation = rotation;
+  _lastTimeStampNs = currentTimeStampNs;
+
+  RTCVideoFrame* videoFrame = [[RTCVideoFrame alloc] initWithBuffer:buffer
+                                                           rotation:rotation
+                                                        timeStampNs:currentTimeStampNs - _startTimeStampNs];
+  [self.delegate capturer:self didCaptureVideoFrame:videoFrame];
+}
+
+- (void)didCaptureVideoFrame:(CVPixelBufferRef)pixelBuffer
+             withOrientation:(CGImagePropertyOrientation)orientation {
   RTCCVPixelBuffer* rtcPixelBuffer = [[RTCCVPixelBuffer alloc] initWithPixelBuffer:pixelBuffer];
-  int64_t frameTimeStampNs = currentTimeStampNs - _startTimeStampNs;
 
   RTCVideoRotation rotation;
   switch (orientation) {
@@ -224,11 +292,9 @@ const NSUInteger kMaxReadLength = 10 * 1024;
       break;
   }
 
-  RTCVideoFrame* videoFrame = [[RTCVideoFrame alloc] initWithBuffer:[rtcPixelBuffer toI420]
-                                                           rotation:rotation
-                                                        timeStampNs:frameTimeStampNs];
-
-  [self.delegate capturer:self didCaptureVideoFrame:videoFrame];
+  @synchronized(self) {
+    [self deliverBuffer:[rtcPixelBuffer toI420] rotation:rotation];
+  }
 }
 
 @end
