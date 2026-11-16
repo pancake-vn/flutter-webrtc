@@ -29,6 +29,10 @@ public class OrientationAwareScreenCapturer implements VideoCapturer, VideoSink 
             DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC | DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION;
     // DPI for VirtualDisplay, does not seem to matter for us.
     private static final int VIRTUAL_DISPLAY_DPI = 400;
+    // A still screen draws no frames, and a viewer takes a share that sends none for a dead one: past this long
+    // without a frame, the screen as it stands is sent again.
+    private static final long STILL_FRAME_INTERVAL_NS = 1_000_000_000L;
+    private static final long STILL_FRAME_CHECK_MS = 500;
     private final Intent mediaProjectionPermissionResultData;
     private final MediaProjection.Callback mediaProjectionCallback;
     private int width;
@@ -46,6 +50,20 @@ public class OrientationAwareScreenCapturer implements VideoCapturer, VideoSink 
     private MediaProjectionManager mediaProjectionManager;
     private WindowManager windowManager;
     private boolean isPortrait;
+    // Read and written on the SurfaceTextureHelper thread. Zero until the first frame.
+    private long lastFrameAtNs = 0;
+    private long lastFrameTimestampNs = 0;
+    private final Runnable stillFrameCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (isDisposed || isStopped) return;
+            // Not before the first frame: the texture then holds nothing to send again.
+            if (lastFrameAtNs != 0 && System.nanoTime() - lastFrameAtNs >= STILL_FRAME_INTERVAL_NS) {
+                surfaceTextureHelper.forceFrame();
+            }
+            surfaceTextureHelper.getHandler().postDelayed(this, STILL_FRAME_CHECK_MS);
+        }
+    };
 
     /**
      * Constructs a new Screen Capturer.
@@ -76,6 +94,15 @@ public class OrientationAwareScreenCapturer implements VideoCapturer, VideoSink 
         if (newW != this.oldWidth || newH != this.oldHeight) {
             changeCaptureFormat(newW, newH, 15);
         }
+        // A frame sent again keeps the timestamp of the one before, which the encoder drops as a repeat.
+        final long nowNs = System.nanoTime();
+        long timestampNs = frame.getTimestampNs();
+        if (timestampNs <= lastFrameTimestampNs) {
+            timestampNs = lastFrameTimestampNs + (nowNs - lastFrameAtNs);
+            frame = new VideoFrame(frame.getBuffer(), frame.getRotation(), timestampNs);
+        }
+        lastFrameAtNs = nowNs;
+        lastFrameTimestampNs = timestampNs;
         capturerObserver.onFrameCaptured(frame);
     }
 
@@ -137,6 +164,7 @@ public class OrientationAwareScreenCapturer implements VideoCapturer, VideoSink 
         createVirtualDisplay();
         capturerObserver.onCapturerStarted(true);
         surfaceTextureHelper.startListening(this);
+        surfaceTextureHelper.getHandler().postDelayed(stillFrameCheck, STILL_FRAME_CHECK_MS);
     }
 
     @Override
@@ -150,6 +178,7 @@ public class OrientationAwareScreenCapturer implements VideoCapturer, VideoSink 
         ThreadUtils.invokeAtFrontUninterruptibly(surfaceTextureHelper.getHandler(), new Runnable() {
             @Override
             public void run() {
+                surfaceTextureHelper.getHandler().removeCallbacks(stillFrameCheck);
                 surfaceTextureHelper.stopListening();
                 capturerObserver.onCapturerStopped();
                 if (virtualDisplay != null) {
