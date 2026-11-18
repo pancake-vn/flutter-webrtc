@@ -117,4 +117,14 @@ typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
 
 + (FlutterWebRTCPlugin* _Nullable)sharedSingleton;
 
+/// The plugin of the Flutter engine whose binary messenger is [messenger]. Each engine registers
+/// its own plugin, with its own peer connection factory and audio device module, and
+/// [sharedSingleton] is only the one registered last.
++ (FlutterWebRTCPlugin* _Nullable)pluginForMessenger:(id<FlutterBinaryMessenger> _Nonnull)messenger
+    NS_SWIFT_NAME(plugin(for:));
+
+/// The plugin whose peer connection factory owns [audioDeviceModule].
++ (FlutterWebRTCPlugin* _Nullable)pluginOwningAudioDeviceModule:
+    (RTCAudioDeviceModule* _Nonnull)audioDeviceModule NS_SWIFT_NAME(plugin(owning:));
+
 @end

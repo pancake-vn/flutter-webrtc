@@ -205,6 +205,9 @@ static dispatch_queue_t MethodCallQueue(void) {
 
 static FlutterWebRTCPlugin *sharedSingleton;
 
+// Every plugin registered, one per Flutter engine, held weakly. Guarded by the class.
+static NSHashTable<FlutterWebRTCPlugin*>* gPlugins;
+
 // Process-global so it can be set from native code (e.g. another plugin) before
 // this plugin is even registered. Defaults to enabled. See
 // +setAudioSessionManagementEnabled:.
@@ -258,6 +261,28 @@ static void FlutterWebRTCApplyFieldTrials(void) {
   @synchronized(self)
   {
     return sharedSingleton;
+  }
+}
+
++ (FlutterWebRTCPlugin*)pluginForMessenger:(id<FlutterBinaryMessenger>)messenger {
+  @synchronized(self) {
+    for (FlutterWebRTCPlugin* plugin in gPlugins.allObjects) {
+      if (plugin.messenger == messenger) {
+        return plugin;
+      }
+    }
+    return nil;
+  }
+}
+
++ (FlutterWebRTCPlugin*)pluginOwningAudioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule {
+  @synchronized(self) {
+    for (FlutterWebRTCPlugin* plugin in gPlugins.allObjects) {
+      if (plugin.peerConnectionFactory.audioDeviceModule == audioDeviceModule) {
+        return plugin;
+      }
+    }
+    return nil;
   }
 }
 
@@ -381,6 +406,13 @@ static void FlutterWebRTCApplyFieldTrials(void) {
 
   // Observe audio device module events.
   _peerConnectionFactory.audioDeviceModule.observer = self;
+
+  @synchronized([FlutterWebRTCPlugin class]) {
+    if (gPlugins == nil) {
+      gPlugins = [NSHashTable weakObjectsHashTable];
+    }
+    [gPlugins addObject:self];
+  }
 
   return self;
 }
